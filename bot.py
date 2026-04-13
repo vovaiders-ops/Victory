@@ -119,7 +119,7 @@ def norm(t):
     return (t or "").strip().lower()
 
 # =========================
-# ADMIN FLOW
+# ADMIN
 # =========================
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,7 +154,7 @@ async def admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
 
         state["step"] = "question"
-        await update.message.reply_text("Вопрос? (/done выход)")
+        await update.message.reply_text("Вопрос? (/done выйти)")
         return
 
     if state["step"] == "question":
@@ -182,10 +182,10 @@ async def admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
 
         state["step"] = "question"
-        await update.message.reply_text("✔ Добавлено. Следующий вопрос")
+        await update.message.reply_text("✔ Добавлено")
 
 # =========================
-# USER FLOW
+# USER
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -268,7 +268,6 @@ def main():
 
     print("BOT RUNNING 🚀")
 
-    # ✅ ВАЖНО: без asyncio.run
     app.run_polling()
 
 
