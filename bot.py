@@ -17,14 +17,23 @@ from telegram.ext import (
 # =========================
 
 TOKEN = os.getenv("TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://your-service.onrender.com
-ADMIN_IDS = {465313785, 1935484494}
+
+# 🔥 ТВОЙ RENDER URL (уже вставлен)
+WEBHOOK_URL = "https://victory-bcjn.onrender.com"
 
 if not TOKEN:
     raise RuntimeError("TOKEN is not set")
 
+ADMIN_IDS = {465313785, 1935484494}
+
 bot = Bot(token=TOKEN)
 app_fastapi = FastAPI()
+
+# =========================
+# TELEGRAM APP (ВАЖНО)
+# =========================
+
+telegram_app = Application.builder().token(TOKEN).build()
 
 # =========================
 # DB
@@ -102,11 +111,68 @@ def norm(t):
     return (t or "").strip().lower()
 
 # =========================
-# HANDLERS
+# BOT LOGIC
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Напиши название викторины")
+
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    if not is_admin(uid):
+        await update.message.reply_text("❌ нет доступа")
+        return
+
+    ADMIN_STATE[uid] = {"step": "quiz"}
+    await update.message.reply_text("🛠 название викторины")
+
+
+async def admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    text = update.message.text.strip()
+
+    if uid not in ADMIN_STATE:
+        return
+
+    state = ADMIN_STATE[uid]
+
+    if state["step"] == "quiz":
+        state["quiz"] = text
+        db().execute("INSERT OR IGNORE INTO quizzes(name) VALUES(?)", (text,))
+        conn.commit()
+
+        state["step"] = "question"
+        await update.message.reply_text("вопрос?")
+        return
+
+    if state["step"] == "question":
+        state["question"] = text
+        state["step"] = "options"
+        await update.message.reply_text("варианты через запятую")
+        return
+
+    if state["step"] == "options":
+        state["options"] = [x.strip() for x in text.split(",")]
+        state["step"] = "answer"
+        await update.message.reply_text("правильный ответ")
+        return
+
+    if state["step"] == "answer":
+        db().execute("""
+            INSERT INTO questions(quiz_name, question, options, answer)
+            VALUES (?, ?, ?, ?)
+        """, (
+            state["quiz"],
+            state["question"],
+            json.dumps(state["options"], ensure_ascii=False),
+            text
+        ))
+        conn.commit()
+
+        state["step"] = "question"
+        await update.message.reply_text("✔ добавлено")
 
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,85 +234,30 @@ async def handle_answer(update: Update):
     await send_question(update)
 
 # =========================
-# ADMIN (упрощённо)
+# REGISTER HANDLERS
 # =========================
 
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-
-    if not is_admin(uid):
-        await update.message.reply_text("❌ нет доступа")
-        return
-
-    ADMIN_STATE[uid] = {"step": "quiz"}
-    await update.message.reply_text("🛠 название викторины")
-
-
-async def admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    text = update.message.text.strip()
-
-    state = ADMIN_STATE[uid]
-
-    if state["step"] == "quiz":
-        state["quiz"] = text
-        db().execute("INSERT OR IGNORE INTO quizzes(name) VALUES(?)", (text,))
-        conn.commit()
-
-        state["step"] = "question"
-        await update.message.reply_text("вопрос?")
-        return
-
-    if state["step"] == "question":
-        state["question"] = text
-        state["step"] = "options"
-        await update.message.reply_text("варианты через запятую")
-        return
-
-    if state["step"] == "options":
-        state["options"] = [x.strip() for x in text.split(",")]
-        state["step"] = "answer"
-        await update.message.reply_text("правильный ответ")
-        return
-
-    if state["step"] == "answer":
-        db().execute("""
-            INSERT INTO questions(quiz_name, question, options, answer)
-            VALUES (?, ?, ?, ?)
-        """, (
-            state["quiz"],
-            state["question"],
-            json.dumps(state["options"], ensure_ascii=False),
-            text
-        ))
-        conn.commit()
-
-        state["step"] = "question"
-        await update.message.reply_text("✔ добавлено")
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CommandHandler("admin", admin))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
 # =========================
-# FASTAPI WEBHOOK
+# WEBHOOK
 # =========================
 
 @app_fastapi.post("/webhook")
 async def webhook(req: Request):
     data = await req.json()
     update = Update.de_json(data, bot)
-
-    application = Application.builder().token(TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("admin", admin))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-
-    await application.process_update(update)
+    await telegram_app.process_update(update)
     return {"ok": True}
 
 # =========================
-# SET WEBHOOK ON START
+# STARTUP
 # =========================
 
 @app_fastapi.on_event("startup")
 async def startup():
+    await telegram_app.initialize()
     await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
     print("WEBHOOK SET 🚀")
