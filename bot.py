@@ -1,16 +1,14 @@
 import os
-import asyncio
 import json
 import sqlite3
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -21,196 +19,15 @@ from telegram.ext import (
 
 TOKEN = os.getenv("TOKEN")
 
-if not TOKEN:
-    raise RuntimeError("❌ TOKEN is not set in environment variables")
-
 ADMIN_IDS = {465313785, 1935484494}
-TIME_LIMIT = 20
+
+if not TOKEN:
+    raise RuntimeError("TOKEN is not set")
+
 DB_NAME = "quiz.db"
 
-SOCIAL_TG = "https://t.me/videt_i_slyshat"
-SOCIAL_VK = "https://vk.com/art_in_church"
-
 # =========================
-# KEEP ALIVE (Render 24/7 FIX)
-# =========================
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), Handler)
-    server.serve_forever()
-
-# =========================
-# SQLITE FAST CONNECTION
-# =========================
-
-DB_CONN = sqlite3.connect(DB_NAME, check_same_thread=False)
-DB_CONN.row_factory = sqlite3.Row
-
-def db():
-    return DB_CONN
-
-# =========================
-# INIT DB (FULL STRUCTURE)
-# =========================
-
-def init_db():
-    cur = db().cursor()
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS quizzes (
-        name TEXT PRIMARY KEY,
-        description TEXT DEFAULT '',
-        starts INTEGER DEFAULT 0,
-        completions INTEGER DEFAULT 0
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS questions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        quiz_name TEXT NOT NULL,
-        question TEXT NOT NULL,
-        options TEXT NOT NULL,
-        answer TEXT NOT NULL,
-        photo TEXT,
-        position INTEGER DEFAULT 0,
-        shown INTEGER DEFAULT 0,
-        correct INTEGER DEFAULT 0,
-        wrong INTEGER DEFAULT 0
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS results (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        user_name TEXT,
-        quiz_name TEXT,
-        score INTEGER,
-        total INTEGER,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        user_name TEXT,
-        full_name TEXT,
-        last_seen TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    db().commit()
-
-init_db()
-
-# =========================
-# MEMORY STATE
-# =========================
-
-USER_STATE = {}
-ADMIN_STATE = {}
-ACTIVE_TIMERS = {}
-
-# =========================
-# HELPERS
-# =========================
-
-def is_admin(uid):
-    return uid in ADMIN_IDS
-
-
-def normalize(t):
-    return (t or "").strip().casefold()
-
-
-def cancel_timer(uid):
-    task = ACTIVE_TIMERS.get(uid)
-    if task:
-        task.cancel()
-    ACTIVE_TIMERS.pop(uid, None)
-
-
-def register_user(user):
-    cur = db().cursor()
-    cur.execute("""
-        INSERT INTO users(user_id, user_name, full_name, last_seen)
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_id) DO UPDATE SET
-            user_name=excluded.user_name,
-            full_name=excluded.full_name,
-            last_seen=CURRENT_TIMESTAMP
-    """, (user.id, user.username or user.first_name, user.full_name))
-    db().commit()
-
-# =========================
-# QUIZ CORE (OPTIMIZED)
-# =========================
-
-def get_quizzes():
-    cur = db().cursor()
-    cur.execute("SELECT * FROM quizzes ORDER BY name COLLATE NOCASE")
-    return cur.fetchall()
-
-
-def get_quiz_names():
-    return [q["name"] for q in get_quizzes()]
-
-
-def get_questions(quiz):
-    cur = db().cursor()
-    cur.execute("""
-        SELECT * FROM questions
-        WHERE quiz_name=?
-        ORDER BY position, id
-    """, (quiz,))
-    rows = cur.fetchall()
-
-    out = []
-    for r in rows:
-        out.append({
-            "id": r["id"],
-            "question": r["question"],
-            "options": json.loads(r["options"]),
-            "answer": r["answer"],
-            "photo": r["photo"],
-            "shown": r["shown"],
-            "correct": r["correct"],
-            "wrong": r["wrong"],
-        })
-    return out
-
-
-def get_question(quiz, idx):
-    qs = get_questions(quiz)
-    if 0 <= idx < len(qs):
-        return qs[idx]
-    return None
-
-
-def add_question(quiz, q, opts, ans, photo):
-    cur = db().cursor()
-    cur.execute("""
-        SELECT COALESCE(MAX(position),0)+1 FROM questions WHERE quiz_name=?
-    """, (quiz,))
-    pos = cur.fetchone()[0]
-
-    cur.execute("""
-        INSERT INTO questions(quiz_name, question, options, answer, photo, position)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (quiz, q, json.dumps(opts, ensure_ascii=False), ans, photo, pos))
-    db().commit()
-
-# =========================
-# KEEP ALIVE SERVER
+# KEEP ALIVE (RENDER)
 # =========================
 
 class Handler(BaseHTTPRequestHandler):
@@ -224,102 +41,247 @@ def run_web():
     port = int(os.environ.get("PORT", 10000))
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
+
 # =========================
-# BOT CORE
+# DB
+# =========================
+
+conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+conn.row_factory = sqlite3.Row
+
+
+def db():
+    return conn
+
+
+def init_db():
+    cur = db().cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS quizzes (
+        name TEXT PRIMARY KEY
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS questions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        quiz_name TEXT,
+        question TEXT,
+        options TEXT,
+        answer TEXT,
+        photo TEXT,
+        position INTEGER DEFAULT 0
+    )
+    """)
+
+    conn.commit()
+
+
+init_db()
+
+# =========================
+# STATE
+# =========================
+
+USER_STATE = {}
+ADMIN_STATE = {}
+
+# =========================
+# HELPERS
+# =========================
+
+def is_admin(uid):
+    return uid in ADMIN_IDS
+
+
+def get_quizzes():
+    cur = db().cursor()
+    cur.execute("SELECT name FROM quizzes")
+    return [r["name"] for r in cur.fetchall()]
+
+
+def get_questions(quiz):
+    cur = db().cursor()
+    cur.execute("SELECT * FROM questions WHERE quiz_name=? ORDER BY position", (quiz,))
+    rows = cur.fetchall()
+
+    return [
+        {
+            "id": r["id"],
+            "question": r["question"],
+            "options": json.loads(r["options"]),
+            "answer": r["answer"],
+            "photo": r["photo"],
+        }
+        for r in rows
+    ]
+
+
+def norm(t):
+    return (t or "").strip().lower()
+
+
+# =========================
+# ADMIN PANEL
+# =========================
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    if not is_admin(uid):
+        await update.message.reply_text("❌ Нет доступа")
+        return
+
+    ADMIN_STATE[uid] = {"step": "quiz_name"}
+
+    await update.message.reply_text(
+        "🛠 Админка\n\n"
+        "Введите название новой викторины"
+    )
+
+
+async def admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    text = update.message.text.strip()
+
+    if uid not in ADMIN_STATE:
+        return
+
+    state = ADMIN_STATE[uid]
+
+    # 1 step: quiz name
+    if state["step"] == "quiz_name":
+        state["quiz"] = text
+
+        cur = db().cursor()
+        cur.execute("INSERT OR IGNORE INTO quizzes(name) VALUES(?)", (text,))
+        conn.commit()
+
+        state["step"] = "question"
+
+        await update.message.reply_text("Вопрос? (или /done)")
+
+        return
+
+    # 2 step: question
+    if state["step"] == "question":
+        state["question"] = text
+        state["step"] = "options"
+
+        await update.message.reply_text("Варианты через запятую")
+
+        return
+
+    # 3 step: options
+    if state["step"] == "options":
+        state["options"] = [x.strip() for x in text.split(",")]
+        state["step"] = "answer"
+
+        await update.message.reply_text("Правильный ответ")
+
+        return
+
+    # 4 step: answer
+    if state["step"] == "answer":
+        quiz = state["quiz"]
+
+        cur = db().cursor()
+        cur.execute("""
+            INSERT INTO questions(quiz_name, question, options, answer)
+            VALUES (?, ?, ?, ?)
+        """, (
+            quiz,
+            state["question"],
+            json.dumps(state["options"], ensure_ascii=False),
+            text
+        ))
+        conn.commit()
+
+        state["step"] = "question"
+
+        await update.message.reply_text("✔ Добавлено. Следующий вопрос или /done")
+
+
+async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    ADMIN_STATE.pop(uid, None)
+    await update.message.reply_text("✅ Админка завершена")
+
+
+# =========================
+# USER FLOW
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    register_user(update.effective_user)
-
     await update.message.reply_text(
-        "👋 Викторина запущена\n\n"
-        "⚡ Render 24/7 активен\n"
-        "🎯 База загружена\n\n"
+        "👋 Викторина\n\n"
         "Напиши название викторины"
     )
 
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    text = (update.message.text or "").strip()
+    text = update.message.text.strip()
 
-    register_user(update.effective_user)
-
-    quiz_names = get_quiz_names()
-
-    # выбор викторины
-    if text in quiz_names:
-        USER_STATE[uid] = {
-            "quiz": text,
-            "q": 0,
-            "score": 0,
-            "mode": "play"
-        }
-        await send_question(update, context)
+    # admin flow first
+    if uid in ADMIN_STATE:
+        await admin_flow(update, context)
         return
 
-    # обработка ответа
-    if USER_STATE.get(uid, {}).get("mode") == "play":
-        await handle_answer(update, context)
+    quizzes = get_quizzes()
+
+    # start quiz
+    if text in quizzes:
+        USER_STATE[uid] = {"quiz": text, "q": 0, "score": 0}
+        await send_question(update)
         return
 
-    await update.message.reply_text("Выбери викторину из списка")
+    if uid in USER_STATE:
+        await handle_answer(update)
+        return
+
+    await update.message.reply_text("Выбери викторину")
 
 
-# =========================
-# QUIZ FLOW
-# =========================
-
-async def send_question(update, context):
+async def send_question(update: Update):
     uid = update.effective_user.id
-    state = USER_STATE.get(uid)
+    state = USER_STATE[uid]
 
-    if not state:
-        return
+    qs = get_questions(state["quiz"])
 
-    quiz = state["quiz"]
-    idx = state["q"]
-
-    qs = get_questions(quiz)
-
-    if idx >= len(qs):
+    if state["q"] >= len(qs):
         await update.message.reply_text(
-            f"🎉 Викторина завершена!\nРезультат: {state['score']}/{len(qs)}"
+            f"🎉 Готово!\n{state['score']}/{len(qs)}"
         )
-        USER_STATE.pop(uid, None)
+        USER_STATE.pop(uid)
         return
 
-    q = qs[idx]
+    q = qs[state["q"]]
 
-    keyboard = ReplyKeyboardMarkup([[o] for o in q["options"]], resize_keyboard=True)
+    kb = ReplyKeyboardMarkup([[o] for o in q["options"]], resize_keyboard=True)
 
-    state["current_answer"] = q["answer"]
-    state["current_id"] = q["id"]
+    state["answer"] = q["answer"]
 
-    if q["photo"]:
-        await update.message.reply_photo(q["photo"], caption=q["question"], reply_markup=keyboard)
-    else:
-        await update.message.reply_text(q["question"], reply_markup=keyboard)
+    await update.message.reply_text(q["question"], reply_markup=kb)
 
 
-async def handle_answer(update, context):
+async def handle_answer(update: Update):
     uid = update.effective_user.id
-    state = USER_STATE.get(uid)
+    state = USER_STATE[uid]
 
-    if not state:
-        return
-
-    text = normalize(update.message.text)
-    correct = normalize(state.get("current_answer"))
+    text = norm(update.message.text)
+    correct = norm(state["answer"])
 
     if text == correct:
         state["score"] += 1
-        await update.message.reply_text("✅ Верно")
+        await update.message.reply_text("✅ верно")
     else:
-        await update.message.reply_text(f"❌ Неверно\nОтвет: {state['current_answer']}")
+        await update.message.reply_text(f"❌ неверно\nОтвет: {state['answer']}")
 
     state["q"] += 1
-    await send_question(update, context)
+    await send_question(update)
+
 
 # =========================
 # MAIN
@@ -331,9 +293,11 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CommandHandler("done", done))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    print("🤖 FINAL BOT RUNNING...")
+    print("BOT RUNNING 🚀")
     app.run_polling()
 
 
