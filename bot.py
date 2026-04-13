@@ -1,6 +1,7 @@
 import os
 import json
 import sqlite3
+import asyncio
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -18,7 +19,6 @@ from telegram.ext import (
 # =========================
 
 TOKEN = os.getenv("TOKEN")
-
 ADMIN_IDS = {465313785, 1935484494}
 
 if not TOKEN:
@@ -40,7 +40,6 @@ class Handler(BaseHTTPRequestHandler):
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
-
 
 # =========================
 # DB
@@ -121,9 +120,8 @@ def get_questions(quiz):
 def norm(t):
     return (t or "").strip().lower()
 
-
 # =========================
-# ADMIN PANEL
+# ADMIN
 # =========================
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -135,10 +133,13 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ADMIN_STATE[uid] = {"step": "quiz_name"}
 
-    await update.message.reply_text(
-        "🛠 Админка\n\n"
-        "Введите название новой викторины"
-    )
+    await update.message.reply_text("🛠 Введите название викторины")
+
+
+async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    ADMIN_STATE.pop(uid, None)
+    await update.message.reply_text("✅ Админка завершена")
 
 
 async def admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -150,48 +151,34 @@ async def admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = ADMIN_STATE[uid]
 
-    # 1 step: quiz name
     if state["step"] == "quiz_name":
         state["quiz"] = text
 
-        cur = db().cursor()
-        cur.execute("INSERT OR IGNORE INTO quizzes(name) VALUES(?)", (text,))
+        db().execute("INSERT OR IGNORE INTO quizzes(name) VALUES(?)", (text,))
         conn.commit()
 
         state["step"] = "question"
-
-        await update.message.reply_text("Вопрос? (или /done)")
-
+        await update.message.reply_text("Вопрос? (/done чтобы выйти)")
         return
 
-    # 2 step: question
     if state["step"] == "question":
         state["question"] = text
         state["step"] = "options"
-
         await update.message.reply_text("Варианты через запятую")
-
         return
 
-    # 3 step: options
     if state["step"] == "options":
         state["options"] = [x.strip() for x in text.split(",")]
         state["step"] = "answer"
-
         await update.message.reply_text("Правильный ответ")
-
         return
 
-    # 4 step: answer
     if state["step"] == "answer":
-        quiz = state["quiz"]
-
-        cur = db().cursor()
-        cur.execute("""
+        db().execute("""
             INSERT INTO questions(quiz_name, question, options, answer)
             VALUES (?, ?, ?, ?)
         """, (
-            quiz,
+            state["quiz"],
             state["question"],
             json.dumps(state["options"], ensure_ascii=False),
             text
@@ -199,39 +186,26 @@ async def admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
 
         state["step"] = "question"
-
         await update.message.reply_text("✔ Добавлено. Следующий вопрос или /done")
 
-
-async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    ADMIN_STATE.pop(uid, None)
-    await update.message.reply_text("✅ Админка завершена")
-
-
 # =========================
-# USER FLOW
+# USER
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Викторина\n\n"
-        "Напиши название викторины"
-    )
+    await update.message.reply_text("👋 Напиши название викторины")
 
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text.strip()
 
-    # admin flow first
     if uid in ADMIN_STATE:
         await admin_flow(update, context)
         return
 
     quizzes = get_quizzes()
 
-    # start quiz
     if text in quizzes:
         USER_STATE[uid] = {"quiz": text, "q": 0, "score": 0}
         await send_question(update)
@@ -251,9 +225,7 @@ async def send_question(update: Update):
     qs = get_questions(state["quiz"])
 
     if state["q"] >= len(qs):
-        await update.message.reply_text(
-            f"🎉 Готово!\n{state['score']}/{len(qs)}"
-        )
+        await update.message.reply_text(f"🎉 Готово! {state['score']}/{len(qs)}")
         USER_STATE.pop(uid)
         return
 
@@ -282,7 +254,6 @@ async def handle_answer(update: Update):
     state["q"] += 1
     await send_question(update)
 
-
 # =========================
 # MAIN
 # =========================
@@ -298,7 +269,9 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
     print("BOT RUNNING 🚀")
-    app.run_polling()
+
+    # 🔥 ВАЖНО: фикс asyncio для Render/Python 3.13+
+    asyncio.run(app.run_polling(close_loop=False))
 
 
 if __name__ == "__main__":
