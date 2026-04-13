@@ -1,7 +1,6 @@
 import os
 import json
 import sqlite3
-import asyncio
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -217,6 +216,9 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Выбери викторину")
 
+# =========================
+# QUIZ FLOW
+# =========================
 
 async def send_question(update: Update):
     uid = update.effective_user.id
@@ -225,7 +227,9 @@ async def send_question(update: Update):
     qs = get_questions(state["quiz"])
 
     if state["q"] >= len(qs):
-        await update.message.reply_text(f"🎉 Готово! {state['score']}/{len(qs)}")
+        await update.message.reply_text(
+            f"🎉 Готово! {state['score']}/{len(qs)}"
+        )
         USER_STATE.pop(uid)
         return
 
@@ -270,8 +274,8 @@ def main():
 
     print("BOT RUNNING 🚀")
 
-    # 🔥 ВАЖНО: фикс asyncio для Render/Python 3.13+
-    asyncio.run(app.run_polling(close_loop=False))
+    # 🔥 ВАЖНО: без asyncio.run
+    app.run_polling()
 
 
 if __name__ == "__main__":
