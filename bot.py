@@ -110,7 +110,6 @@ def get_questions(quiz):
             "question": r["question"],
             "options": json.loads(r["options"]),
             "answer": r["answer"],
-            "photo": r["photo"],
         }
         for r in rows
     ]
@@ -120,7 +119,7 @@ def norm(t):
     return (t or "").strip().lower()
 
 # =========================
-# ADMIN
+# ADMIN FLOW
 # =========================
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -131,7 +130,6 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     ADMIN_STATE[uid] = {"step": "quiz_name"}
-
     await update.message.reply_text("🛠 Введите название викторины")
 
 
@@ -152,12 +150,11 @@ async def admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state["step"] == "quiz_name":
         state["quiz"] = text
-
         db().execute("INSERT OR IGNORE INTO quizzes(name) VALUES(?)", (text,))
         conn.commit()
 
         state["step"] = "question"
-        await update.message.reply_text("Вопрос? (/done чтобы выйти)")
+        await update.message.reply_text("Вопрос? (/done выход)")
         return
 
     if state["step"] == "question":
@@ -185,10 +182,10 @@ async def admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
 
         state["step"] = "question"
-        await update.message.reply_text("✔ Добавлено. Следующий вопрос или /done")
+        await update.message.reply_text("✔ Добавлено. Следующий вопрос")
 
 # =========================
-# USER
+# USER FLOW
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -216,9 +213,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Выбери викторину")
 
-# =========================
-# QUIZ FLOW
-# =========================
 
 async def send_question(update: Update):
     uid = update.effective_user.id
@@ -274,7 +268,7 @@ def main():
 
     print("BOT RUNNING 🚀")
 
-    # 🔥 ВАЖНО: без asyncio.run
+    # ✅ ВАЖНО: без asyncio.run
     app.run_polling()
 
 
